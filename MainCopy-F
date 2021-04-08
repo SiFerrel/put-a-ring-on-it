@@ -1,0 +1,302 @@
+from scipy import constants
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+
+def ImportImage2D(filename,ymin,ysize,zoffset):
+    #define y-z range of image
+    ymax=ymin+ysize
+
+    #load image and convert to array
+    img = Image.open(filename)
+    ar = np.array(img)
+    plt.imshow(ar)
+    #Use # of pixels to define z-range of image, keeping aspect ratio
+    StepSize=ar.shape[1]/(ymax-ymin)
+    ZMax=ar.shape[0]/(2*StepSize)+zoffset
+    ZMin=-ar.shape[0]/(2*StepSize)+zoffset
+
+    #define x,y,z positions and velocities for each pixel row/column 
+    y=np.linspace(ymin,ymax,num=ar.shape[1])
+    #yvel=np.zeros(len(y))
+    z=np.linspace(ZMin,ZMax,num=ar.shape[0])
+    #zvel=np.zeros(len(z))
+    #x=InitX
+    #xvel=InitVx
+
+    #use meshgrid to generalize x,y,z positions/velocities to all pixels
+    y,z=np.meshgrid(y,z) #y flipped to match desired coord system
+    #xvel,yvel,zvel=np.meshgrid(xvel,yvel,zvel,indexing='ij')
+
+    #use ravel to unspool pixels
+    y,z=np.ravel(y),np.flip(np.ravel(z))
+    #xvel,yvel,zvel=np.ravel(xvel),np.ravel(yvel),np.ravel(zvel)
+    Red=np.ravel(ar[:,:,0])
+    Grn=np.ravel(ar[:,:,1])
+    Blu=np.ravel(ar[:,:,2])
+    return y,z,Red,Grn,Blu
+
+def ImportImageCyl(filename,ymin,ysize,zoffset):
+    #define y-z range of image
+    ymax=ymin+ysize
+
+    #load image and convert to array
+    img = Image.open(filename)
+    ar = np.array(img)
+    plt.imshow(ar)
+    plt.title('Original Image')
+    plt.show()
+    
+    StepSize=ar.shape[1]/(ymax-ymin)
+    ZMax=ar.shape[0]/(2*StepSize)+zoffset
+    ZMin=-ar.shape[0]/(2*StepSize)+zoffset
+
+    #define x,y,z positions and velocities for each pixel row/column 
+    y=np.linspace(ymin,ymax,num=ar.shape[1])
+    #yvel=np.zeros(len(y))
+    z=np.linspace(ZMin,ZMax,num=ar.shape[0])
+    
+    #downselect to single line
+    arline=ar[0,:,:]
+
+    #Use # of pixels to define y-range of image, keeping aspect ratio
+    StepSize=ar.shape[1]/(ymax-ymin)
+
+    #define y position for each pixel 
+    y=np.linspace(ymin,ymax,num=ar.shape[1])
+
+    Red=np.ravel(ar[:,:,0])
+    Grn=np.ravel(ar[:,:,1])
+    Blu=np.ravel(ar[:,:,2])
+    return y,z,Red,Grn,Blu
+
+#remove points that will inspiral to lens
+def ScrubData1D(y,z,Red,Grn,Blu):
+    IndexToRemove=np.argwhere(abs(y)<(3*R))
+    yScrub = [i for j, i in enumerate(y) if j not in IndexToRemove]
+    zScrub = [i for j, i in enumerate(z) if j not in IndexToRemove]
+    RedScrub = [i for j, i in enumerate(Red) if j not in IndexToRemove]
+    GrnScrub = [i for j, i in enumerate(Grn) if j not in IndexToRemove]
+    BluScrub = [i for j, i in enumerate(Blu) if j not in IndexToRemove]
+    return yScrub,zScrub,RedScrub,GrnScrub,BluScrub
+
+#remove points that will inspiral to lens
+def ScrubDataCyl(y,z,Red,Grn,Blu,R):
+    IndexToRemove=np.argwhere(abs(y)<(3*R))
+    Multiples=np.asarray(range(0,len(z)))*len(y)
+    IndexToRemove2=np.ravel(IndexToRemove[:]+Multiples)
+    yScrub = [i for j, i in enumerate(y) if j not in IndexToRemove]
+    RedScrub = [i for j, i in enumerate(Red) if j not in IndexToRemove2]
+    GrnScrub = [i for j, i in enumerate(Grn) if j not in IndexToRemove2]
+    BluScrub = [i for j, i in enumerate(Blu) if j not in IndexToRemove2]
+    return yScrub,RedScrub,GrnScrub,BluScrub
+    
+#remove points that will inspiral to lens
+def ScrubData2D(y,z,Red,Grn,Blu):
+    IndexToRemove=np.argwhere((abs(y)**2+abs(z)**2)<((3*R)**2))
+    yScrub = [i for j, i in enumerate(y) if j not in IndexToRemove]
+    zScrub = [i for j, i in enumerate(z) if j not in IndexToRemove]
+    RedScrub = [i for j, i in enumerate(Rval) if j not in IndexToRemove]
+    GrnScrub = [i for j, i in enumerate(Gval) if j not in IndexToRemove]
+    BluScrub = [i for j, i in enumerate(Bval) if j not in IndexToRemove]
+    return yScrub,zScrub,RedScrub,GrnScrub,BluScrub
+
+#inputs: initial x position [SI units], initial y position [SI units], lens mass [in solar mass units]
+def rk41D(x_init, y_init, lens_mass = 1e3, N = 1000,detector_loc=-100): 
+    
+    ##! Import root finding method to solve for the turning point.
+    ##! TODO: implement root finding by hand?
+    from scipy.optimize import brentq 
+    
+    ##! Set font size for plots
+    #plt.rcParams.update({'font.size': 22})
+    
+    ##! Define necessary physical constants
+    G = constants.G
+    c = constants.c
+    solar_mass = 1.98847e30
+    
+    ##! Lens Properties
+    M = solar_mass*lens_mass # convert lens mass to kg
+    R = 2*G*M/(c**2) # Schwarzschild Radius, to be used as as length normalization
+    detector_location = detector_loc*R
+    
+    ##! In the 'inbound' portion of the trajectory, r must decrease, therefore
+    ##! dr/dphi must be negative (phi is always increasing). However, once the particle passes the turning point
+    ##! r1 (closest approach), r must INCREASE, therefore dr/dphi becomes positive.
+    ##! To model this, the sign of dr/dphi is initially set to -1. Once the distance
+    ##! r is within a certain distance from the turning point distance, the sign is changed
+    ##! to +1 to reflect the outbound orbit. This tolerance must be finite, as at r1 itself,
+    ##! the equation for dr/dphi diverges. The result is that the orbit "jumps" over the turning
+    ##! point. Epsilon is the tolerance, i.e., the difference between r and r1 at which
+    ##! point the code knows to 'jump' past the turning point, and reverse the sign of dr/dphi
+    epsilon = 0.01*R 
+    
+    ##! initialize photon locations, in both cartesian and polar coodinates
+    x0 = np.array([x_init])
+    y0 = np.array([abs(y_init)])
+    r0 = np.sqrt(x0**2 + y0**2)
+    phi_0 = np.arctan2(y0,x0)
+    
+    ##! Set the impact parameter of the particle.
+    ##! RIGHT NOW, IMPACT PARAMETER IS THE INITIAL Y COORDINATE.
+    ##! THIS ASSUMES THE PARTICLE ENTERS THE REGION WITH A
+    ##! VELOCITY PARALLEL TO THE X AXIS.
+    ##! TODO: Generalize this.
+    b = y0
+    
+    ##! Check whether the photon orbit is bounded or unbounded.
+    ##! If the impact parameter b is below this threshold,
+    ##! the photon will be captured by the mass. In this case
+    ##! the function returns the string 'Captured'
+    if b**2 < 27*(R/2)**2:
+        return -1, -1
+    
+    ##! Function to determine the turning point r1.
+    ##! Finding the root of this function returns the 
+    ##! turning point
+    def turning_point(r):
+        return r**3 - r*b**2+R*b**2
+    
+    ##! Calculate the turning point via the Brent method.
+    ##! First input: function of which the root is desired
+    ##! Second input: lower bound of the root.
+    ##! Third input: upper bound of the root. 
+    ##! THERE SHOULD BE TWO POSITIVE SOLUTIONS FOR THE TURNING POINT,
+    ##! ONE VERY NEAR THE SCHWARZCHILD RADIUS, AND ONE FURTHER AWAY.
+    ##! THIS REFLECTS THE TWO POINTS AT WHICH 1/b^2 INTERSECTS Weff.
+    ##! WHAT 
+    r1 = brentq(turning_point, 2*R, b)
+    
+    ##! Define the step size in phi (azimuthal angle), as the difference
+    ##! between the initial angle phi_0 and 2*pi,
+    ##! divided by the number of steps N
+    dphi = (2*np.pi-phi_0)/N
+    
+    ##! Set the sign of the derivative to negative initially, reflecting
+    ##! the inbound portion of the trajectory
+    sign = -1
+    
+    ##! Create an array of r values that range from phi_0 to 2*pi with step dphi
+    phi = np.arange(phi_0,2*np.pi,dphi)
+
+    
+    ##! Initialize an array to hold the values of r calculated for each respective phi
+    ##! via the ODE solver. Make the first value the initial value r0
+    r = np.array([r0])
+    
+    ##! Define the ODE for r(phi), in terms of the effective potential weff.
+    ##! Input: radial distance, in SI units
+    def f(r):
+        weff = (1-R/r)/(r**2)
+        return 1/(sign*(1/(b**2) - weff)**(-1/2)*(1/(r**2)))
+    
+    ##! RK4 SOLVER
+    ##! Calculate the respective distance r for the given value of phi.
+    ##! If the particle exceeds the initial distance r0, terminate
+    ##! the calculation. Later, this condition will be replaced with
+    ##! the detector location. 
+    ##! If the particle is within epsilon distance of the turning
+    ##! point, jump over the turning point and change the sign of 
+    ##! dr/dphi
+    for i in range(1,len(phi)):
+        k1 = dphi*f(r[i-1])
+        k2 = dphi*f(r[i-1] + 0.5*k1)
+        k3 = dphi*f(r[i-1] + 0.5*k2)
+        k4 = dphi*f(r[i-1] + k3)
+        new_r = r[i-1]+(1/6)*(k1+2*k2+2*k3+k4)
+        r = np.append(r, new_r)
+        if np.linalg.norm(r[i]) > r0:
+            phi = phi[0:len(r)]
+            break
+        elif np.linalg.norm(r[i]) - r1 < epsilon:
+            sign = 1
+        
+    ##! Convert the output from polar to cartesian coordinates.
+    ##! Y axis: Axis connecting the lens location to the turning point.
+    ##! X axis: Axis perpendicular to Y, and contained in the plane
+    ##! defined by the lens location and any two points along the 
+    ##! photon trajectory (Conservation of angular momentum requires
+    ##! that the photon trajectory be confined to a plane containing 
+    ##! the lens.)
+    
+    x = r*np.cos(phi)
+    y = r*np.sin(phi)
+    
+    y2, y1 = y[-1], y[-2]
+    x2, x1 = x[-1], x[-2]
+
+    m = (y2-y1)/(x2-x1)
+
+    y_detector = m*detector_location + y2-m*x2
+
+    x[-1] = detector_location
+    y[-1] = y_detector
+    
+    ##! Particles that have an initial y position y_init that is negative are simply
+    ##! flipped, treated as if the y_init was positive, and then flipped back. This 
+    ##! avoids having to redefine the angle phi, which would change the treatment of the
+    ##! sign of the derivative. 
+    if y_init < 0:
+        y = -1*y
+    
+    ##! Return the array of x and y coordinates. For efficiency, this will eventually
+    ##! be replaced with returning only the final coordinates x[-1] and y[-1].
+    ##! STILL NEED TO ADD THE THRID DIMENSION Z TO THIS. Plan to do this by rotating
+    ##! each plane into the xy plane, modeling, and then rotating back, and calculating the 
+    ##! final (x,y,z) position from that.
+    return x[-1], y[-1] 
+
+def LensMain_Cylinder(filename,ymin,ymax,zoffset=0,l_mass=1e3):  #ymin,ymax in terms of Schwarzschild Radius
+    G = constants.G
+    c = constants.c
+    solar_mass = 1.98847e30
+
+    ##! Lens Properties
+    M = solar_mass*l_mass # convert lens mass to kg
+    R = 2*G*M/(c**2) # Schwarzschild Radius, to be used as as length normalization
+    
+    #Reading in and plotting Initial Image Data
+    ysize=(ymax-ymin)*R
+    y_orig,z_orig,Rinit,Ginit,Binit=ImportImageCyl(filename,ymin*R,ysize,zoffset*R)
+    RGBinit=np.hstack((Rinit[:,np.newaxis],Ginit[:,np.newaxis],Binit[:,np.newaxis]))/255
+
+    yinit,zinit=np.meshgrid(y_orig,z_orig)
+    plt.scatter(yinit/R,np.flip(zinit/R),color=RGBinit,s=1.5)
+    plt.title('Original Data with Location')
+    plt.xlabel('y coordinate (Schwarzschild radii)')
+    plt.ylabel('z coordinate (Schwarzschild radii)')
+    plt.show()
+    
+    #Removing Data which falls into lens
+    ypre,Rpre,Gpre,Bpre=ScrubDataCyl(y_orig,z_orig,Rinit,Ginit,Binit,R)
+    ypre,Rpre,Gpre,Bpre=np.asarray(ypre),np.asarray(Rpre),np.asarray(Gpre),np.asarray(Bpre)
+    RGBpre=np.hstack((Rpre[:,np.newaxis],Gpre[:,np.newaxis],Bpre[:,np.newaxis]))/255
+    
+    #Lensing Data to find new positions
+    x = np.ones(len(ypre))*100*R
+    y_array = np.zeros((len(ypre)))
+    for i in range(len(ypre)):
+        x_r, y_r = rk41D(x[i],ypre[i], l_mass)
+        y_array[i] = y_r
+    
+    #setting coordinates and plotting final image
+    y_final,z_final=np.meshgrid(y_array,z_orig)
+    y_final,z_final=np.ravel(y_final),np.ravel(z_final)
+    plt.scatter(y_final/R,np.flip(z_final/R),color=RGBpre,s=2)
+    plt.title('Image as lensed by cylindrical lens')
+    plt.xlabel('y coordinate (Schwarzschild radii)')
+    plt.ylabel('z coordinate (Schwarzschild radii)')
+    plt.show()
+    
+    #Zoomed in image
+    plt.scatter(y_final/R,np.flip(z_final/R),color=RGBpre,s=2)
+    plt.xlim(-10,10)
+    plt.title('Zoomed in Image as lensed by cylindrical lens')
+    plt.xlabel('y coordinate (Schwarzschild radii)')
+    plt.ylabel('z coordinate (Schwarzschild radii)')
+    plt.show()
+    
+    
+LensMain_Cylinder('ladybug.jpg',-10,10)
+    
