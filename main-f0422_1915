@@ -1,0 +1,321 @@
+#import packages
+from scipy import constants
+from scipy.interpolate import interp2d
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+
+#set constants
+l_mass=1e3
+G = constants.G
+c = constants.c
+solar_mass = 1.98847e30
+
+##! Lens Properties
+M = solar_mass*l_mass # convert lens mass to kg
+R = 2*G*M/(c**2) # Schwarzschild Radius, to be used as as length normalization
+
+#inputs: initial x position [SI units], initial y position [SI units], lens mass [in solar mass units]
+def rk43d(x_init, y_init, z_init, lens_mass = 1e3, N = 1000, detector_loc = -75): 
+    
+    ##! Import root finding method to solve for the turning point.
+    ##! TODO: implement root finding by hand?
+    from scipy.optimize import brentq 
+    
+    ##! Define necessary physical constants
+    G = constants.G
+    c = constants.c
+    solar_mass = 1.98847e30
+    
+    ##! Lens Properties
+    M = solar_mass*lens_mass # convert lens mass to kg
+    R = 2*G*M/(c**2) # Schwarzschild Radius, to be used as as length normalization
+    
+    detector_location = detector_loc*R
+    
+    ##! In the 'inbound' portion of the trajectory, r must decrease, therefore
+    ##! dr/dphi must be negative (phi is always increasing). However, once the particle passes the turning point
+    ##! r1 (closest approach), r must INCREASE, therefore dr/dphi becomes positive.
+    ##! To model this, the sign of dr/dphi is initially set to -1. Once the distance
+    ##! r is within a certain distance from the turning point distance, the sign is changed
+    ##! to +1 to reflect the outbound orbit. This tolerance must be finite, as at r1 itself,
+    ##! the equation for dr/dphi diverges. The result is that the orbit "jumps" over the turning
+    ##! point. Epsilon is the tolerance, i.e., the difference between r and r1 at which
+    ##! point the code knows to 'jump' past the turning point, and reverse the sign of dr/dphi
+    epsilon = 0.01*R 
+    
+    ##! Transform input coordinates (unprimed system) into planar (primed) coordinates
+    
+    delta = np.arctan2(z_init,y_init)
+    
+    x0_prime = x_init
+    y0_prime = np.linalg.norm([y_init, z_init])
+    
+    ##! initialize photon locations, in both cartesian and polar coodinates
+    x0 = np.array([x0_prime])
+    y0 = np.array([y0_prime])
+    r0 = np.sqrt(x0**2 + y0**2)
+    phi_0 = np.arctan2(y0,x0)
+    
+    ##! Set the impact parameter of the particle.
+    ##! RIGHT NOW, IMPACT PARAMETER IS THE INITIAL Y COORDINATE.
+    ##! THIS ASSUMES THE PARTICLE ENTERS THE REGION WITH A
+    ##! VELOCITY PARALLEL TO THE X AXIS.
+    ##! TODO: Generalize this.
+    b = y0
+    
+    ##! Check whether the photon orbit is bounded or unbounded.
+    ##! If the impact parameter b is below this threshold,
+    ##! the photon will be captured by the mass. In this case
+    ##! the function returns the string 'Captured'
+    if b**2 < 27*(R/2)**2:
+        return -1, -1
+    
+    ##! Function to determine the turning point r1.
+    ##! Finding the root of this function returns the 
+    ##! turning point
+    def turning_point(r):
+        return r**3 - r*b**2+R*b**2
+    
+    ##! Calculate the turning point via the Brent method.
+    ##! First input: function of which the root is desired
+    ##! Second input: lower bound of the root.
+    ##! Third input: upper bound of the root. 
+    ##! THERE SHOULD BE TWO POSITIVE SOLUTIONS FOR THE TURNING POINT,
+    ##! ONE VERY NEAR THE SCHWARZCHILD RADIUS, AND ONE FURTHER AWAY.
+    ##! THIS REFLECTS THE TWO POINTS AT WHICH 1/b^2 INTERSECTS Weff.
+    ##! WHAT 
+    r1 = brentq(turning_point, 2*R, b)
+    
+    ##! Define the step size in phi (azimuthal angle), as the difference
+    ##! between the initial angle phi_0 and 2*pi,
+    ##! divided by the number of steps N
+    dphi = (2*np.pi-phi_0)/N
+    
+    ##! Set the sign of the derivative to negative initially, reflecting
+    ##! the inbound portion of the trajectory
+    sign = -1
+    
+    ##! Create an array of r values that range from phi_0 to 2*pi with step dphi
+    phi = np.arange(phi_0,2*np.pi,dphi)
+
+    
+    ##! Initialize an array to hold the values of r calculated for each respective phi
+    ##! via the ODE solver. Make the first value the initial value r0
+    r = np.array([r0])
+    
+    ##! Define the ODE for r(phi), in terms of the effective potential weff.
+    ##! Input: radial distance, in SI units
+    def f(r):
+        weff = (1-R/r)/(r**2)
+        return 1/(sign*(1/(b**2) - weff)**(-1/2)*(1/(r**2)))
+    
+    ##! RK4 SOLVER
+    ##! Calculate the respective distance r for the given value of phi.
+    ##! If the particle exceeds the initial distance r0, terminate
+    ##! the calculation. Later, this condition will be replaced with
+    ##! the detector location. 
+    ##! If the particle is within epsilon distance of the turning
+    ##! point, jump over the turning point and change the sign of 
+    ##! dr/dphi
+    for i in range(1,len(phi)):
+        k1 = dphi*f(r[i-1])
+        k2 = dphi*f(r[i-1] + 0.5*k1)
+        k3 = dphi*f(r[i-1] + 0.5*k2)
+        k4 = dphi*f(r[i-1] + k3)
+        new_r = r[i-1]+(1/6)*(k1+2*k2+2*k3+k4)
+        r = np.append(r, new_r)
+        if np.linalg.norm(r[i])*np.cos(phi[i]) < detector_location:
+            phi = phi[0:len(r)]
+            break
+        elif np.linalg.norm(r[i]) - r1 < epsilon:
+            sign = 1
+        
+    ##! Convert the output from polar to cartesian coordinates.
+    ##! Y axis: Axis connecting the lens location to the turning point.
+    ##! X axis: Axis perpendicular to Y, and contained in the plane
+    ##! defined by the lens location and any two points along the 
+    ##! photon trajectory (Conservation of angular momentum requires
+    ##! that the photon trajectory be confined to a plane containing 
+    ##! the lens.)
+    
+    x = r*np.cos(phi)
+    y = r*np.sin(phi)
+    
+    ##! We now need to backtrace, and calculate the y value exactly when the 
+    ##! particle crossed the detector
+    
+    y2, y1 = y[-1], y[-2]
+    x2, x1 = x[-1], x[-2]
+    
+    m = (y2-y1)/(x2-x1)
+    
+    y_detector = m*detector_location + y2-m*x2
+    
+    x[-1] = detector_location
+    y[-1] = y_detector
+    
+    ##! now we must convert the final coordinate, y_detector
+    ##! which is in the primed system, back into the unprimed system
+    
+    
+    ##! Particles that have an initial y position y_init that is negative are simply
+    ##! flipped, treated as if the y_init was positive, and then flipped back. This 
+    ##! avoids having to redefine the angle phi, which would change the treatment of the
+    ##! sign of the derivative. 
+    #if y_init < 0:
+    #    y = -1*y
+    
+    ##! now we must convert the final coordinate, y_detector
+    ##! which is in the primed system, back into the unprimed system
+    y_out = y[-1]*np.cos(delta)
+    z_out = y[-1]*np.sin(delta)
+    
+
+    ##! Return the array of x and y coordinates. For efficiency, this will eventually
+    ##! be replaced with returning only the final coordinates x[-1] and y[-1].
+    ##! STILL NEED TO ADD THE THRID DIMENSION Z TO THIS. Plan to do this by rotating
+    ##! each plane into the xy plane, modeling, and then rotating back, and calculating the 
+    ##! final (x,y,z) position from that.
+    return y_out, z_out
+
+def SetDetector(Lower,Upper,PixelsAcross,Rad=R):
+    #Set Detector Size - this isn't the size of the detector, but the size of the space being viewed and the number of pixels
+    yrange=np.linspace(Lower,Upper,PixelsAcross)*Rad
+    zrange=np.linspace(Lower,Upper,PixelsAcross)*Rad
+    ymesh,zmesh=np.meshgrid(yrange,zrange)
+    yravel,zravel=np.ravel(ymesh),np.ravel(zmesh)
+    
+    #remove inputs from middle 3R radius - since these fall into the lens
+    IndexToRemove=np.argwhere((abs(yravel)**2+abs(zravel)**2)<((3*R)**2))
+    yScrub = np.asarray([i for j, i in enumerate(yravel) if j not in IndexToRemove])
+    zScrub = np.asarray([i for j, i in enumerate(zravel) if j not in IndexToRemove])
+    return yScrub, zScrub
+
+def GaussSource(minoff,maxoff,N,yimaged,zimaged,YDetector,ZDetector,Rad):
+    posoffsets = np.linspace(minoff,maxoff,N)
+    for i in posoffsets:
+        LightVal = np.zeros((len(yDetector)))
+        for j in range (len(yDetector)):
+            LightVal[j] = (y_imaged[j]/R-i)**2+(z_imaged[j]/R)**2
+        LightShow=np.exp(-LightVal)
+        outputname='ERingat'+'{:04f}'.format(i)+'.png'
+        plt.figure(figsize=(10,10))
+        plt.scatter(yDetector/R,zDetector/R,c=LightShow,s=30)
+        plt.ylabel('Schwarzschild Radii (Z-Axis)')
+        plt.xlabel('Schwarzschild Radii (Y-Axis)')
+        plt.title('Imaged Version of Object centered {} to right of lens'.format(i))
+        print(outputname)
+        plt.savefig(outputname)
+        plt.show()
+        plt.close()
+        
+def GridSnapImage(filename,ymin,ysize,zoffset,yimaged,zimaged,YDetector,ZDetector,Rad,imagemin,imagemax):
+    #define y-z range of image
+    ymax=ymin+ysize
+
+    #load image and convert to array
+    img = Image.open(filename)
+    ar = np.array(img)
+    plt.imshow(ar)
+    plt.show()
+    #Use # of pixels to define z-range of image, keeping aspect ratio
+    StepSize=ar.shape[1]/(ymax-ymin)
+    ZMax=ar.shape[0]/(2*StepSize)+zoffset
+    ZMin=-ar.shape[0]/(2*StepSize)+zoffset
+
+    #define x,y,z positions and velocities for each pixel row/column 
+    y=np.linspace(ymin,ymax,num=ar.shape[1])*R
+    z=np.linspace(ZMin,ZMax,num=ar.shape[0])*R
+    
+    HalfStep=(y[1]-y[0])/2
+    Red=np.zeros((len(y_imaged)))
+    Grn=np.zeros((len(y_imaged)))
+    Blu=np.zeros((len(y_imaged)))
+
+    for i in range(len(y_imaged)):
+        YDiff=np.abs(y_imaged[i]-y)
+        yindex=np.argwhere(YDiff<HalfStep+1e-10)
+        ZDiff=np.abs(z_imaged[i]-z)
+        zindex=np.argwhere(ZDiff<HalfStep+1e-10)
+        if yindex.size==0 or zindex.size==0:
+            Red[i]=255
+            Grn[i]=255
+            Blu[i]=255
+        elif len(yindex)>1.5:
+            print('ERROR')
+        else:
+            Red[i]=ar[zindex,yindex,0]
+            Grn[i]=ar[zindex,yindex,1]
+            Blu[i]=ar[zindex,yindex,2]
+    
+    RGB=np.hstack((Red[:,np.newaxis],Grn[:,np.newaxis],Blu[:,np.newaxis]))/255
+    plt.figure(figsize=(10,10))
+    plt.scatter(np.flip(yDetector)/R,zDetector/R,color=RGB,s=30)  #flip is used here since the image is read in top down instead of bottom up
+    plt.xlim(imagemin,imagemax)
+    plt.ylim(imagemin,imagemax)
+    plt.xlabel('Y position (Schwarzschild Radii)')
+    plt.ylabel('Z position (Schwarzschild Radii)')
+    plt.show()
+    
+def GridSnapStarfield(ymin,ysize,starprobability,yimaged,zimaged,YDetector,ZDetector,Rad,imagemin,imagemax):
+    #define y-z range of image
+    ymax=ymin+size
+    zmin=ymin
+    zmax=ymax
+
+    #define x,y,z positions and velocities for each pixel row/column 
+    yrange=np.linspace(ymin,ymax,1000)*Rad
+    zrange=np.linspace(zmin,zmax,1000)*Rad
+
+
+    HalfStep=(yrange[1]-yrange[0])/2
+    
+    Starfield=np.random.rand(len(zrange),len(yrange))
+    star_thresh_indices = Starfield > (1-starprobability)
+    Starfield[:,:]=0
+    Starfield[star_thresh_indices] = 1
+    yy,zz=np.meshgrid(yrange,zrange)
+    
+    plt.figure(figsize=(10,10))
+    plt.scatter(yy/Rad,zz/Rad,c=Starfield,s=0.02)
+    plt.show()
+    
+    stardetected=np.zeros(len(yimaged))
+
+    for i in range(len(yimaged)):
+        YDiff=np.abs(yimaged[i]-y)
+        yindex=np.argwhere(YDiff<HalfStep)
+        ZDiff=np.abs(z_imaged[i]-z)
+        zindex=np.argwhere(ZDiff<HalfStep)
+        if yindex.size==0 or zindex.size==0:
+            stardetected[i]=0
+        elif yindex.size==2 or zindex.size==2:
+            yindex=yindex[0]
+            zindex=zindex[0]
+        else:
+            stardetected[i]=Starfield[zindex,yindex]
+
+    plt.figure(figsize=(10,10))
+    plt.scatter(YDetector/R,ZDetector/R,c=stardetected,s=30)
+    
+##### set y and z coordinates for detector pixels
+yDetector,zDetector = SetDetector(-20,20,400)
+
+#set position to start the RK4 process
+xStart=np.ones(len(yDetector))*100*R   
+
+#set empty arrays to assign what each pixel images
+y_imaged = np.zeros((len(yDetector)))
+z_imaged = np.zeros((len(zDetector)))
+
+for i in range(len(yDetector)):
+    y_r, z_r = rk43d(xStart[i],yDetector[i],zDetector[i], l_mass,detector_loc=-75)
+    y_imaged[i] = y_r
+    z_imaged[i] = z_r
+    
+GaussSource(-15,15,61,y_imaged,z_imaged,yDetector,zDetector,R)
+
+GridSnapImage('ladybug.jpg',-20,40,0,y_imaged,z_imaged,yDetector,zDetector,R,imagemin=-20,imagemax=20)
+
+GridSnapStarfield(-100,200,0.025,y_imaged,z_imaged,yDetector,zDetector,R,-20,20)
